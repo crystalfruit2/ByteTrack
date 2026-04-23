@@ -3,7 +3,10 @@ import numpy as np
 import os
 import os.path as osp
 import copy
+import cv2
 import torch
+import torchvision.transforms as T
+from torchvision.models import mobilenet_v2
 import torch.nn.functional as F
 
 from .kalman_filter import KalmanFilter
@@ -25,10 +28,13 @@ class STrack(BaseTrack):
 
         self.features = deque(maxlen=3)
         self.scores = deque(maxlen=3)
+        self.curr_feat = None
+        self.smooth_feat = None
         
         if feature is not None:
             self.features.append(feature)
             self.scores.append(score)
+            self.curr_feat = feature
             self.smooth_feat = feature.copy() # Represents Z^t
             
         # Hyperparameters (Set these based on your paper's specs)
@@ -91,7 +97,9 @@ class STrack(BaseTrack):
             self.smooth_feat = np.average(feats_array, axis=0, weights=gammas)
             
         # Re-normalize the feature vector to keep it on the unit hypersphere
-        self.smooth_feat /= np.linalg.norm(self.smooth_feat)
+        norm = np.linalg.norm(self.smooth_feat)
+        if norm > 0:
+            self.smooth_feat /= norm
 
 
     def predict(self):
@@ -227,12 +235,22 @@ class BYTETracker(object):
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
 
+        # --- LIGHTWEIGHT FEATURE EXTRACTOR ---
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.extractor = mobilenet_v2(pretrained=True).features.to(self.device).eval()
+        self.transform = T.Compose([
+            T.ToTensor(),
+            T.Resize((128, 64)),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
     def update(self, output_results, img_info, img_size):
         self.frame_id += 1
         activated_starcks = []
         refind_stracks = []
         lost_stracks = []
         removed_stracks = []
+        raw_frame = img_info[0] if isinstance(img_info[0], np.ndarray) else None
 
         if output_results.shape[1] == 5:
             scores = output_results[:, 4]
@@ -241,7 +259,10 @@ class BYTETracker(object):
             output_results = output_results.cpu().numpy()
             scores = output_results[:, 4] * output_results[:, 5]
             bboxes = output_results[:, :4]  # x1y1x2y2
-        img_h, img_w = img_info[0], img_info[1]
+        if raw_frame is not None:
+            img_h, img_w = raw_frame.shape[:2]
+        else:
+            img_h, img_w = img_info[0], img_info[1]
         scale = min(img_size[0] / float(img_h), img_size[1] / float(img_w))
         bboxes /= scale
 
@@ -261,6 +282,23 @@ class BYTETracker(object):
                           (tlbr, s) in zip(dets, scores_keep)]
         else:
             detections = []
+
+        if raw_frame is not None and len(detections) > 0:
+            for det in detections:
+                tlwh = det.tlwh
+                x, y, w, h = map(int, tlwh)
+                x1, y1 = max(0, x), max(0, y)
+                x2, y2 = min(raw_frame.shape[1], x + w), min(raw_frame.shape[0], y + h)
+                crop = raw_frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    if crop.ndim == 3 and crop.shape[2] == 3:
+                        crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                    crop_t = self.transform(crop).unsqueeze(0).to(self.device)
+                    with torch.no_grad():
+                        feat = self.extractor(crop_t).mean([2, 3]).squeeze().cpu().numpy()
+                    det.curr_feat = feat
+                else:
+                    det.curr_feat = np.zeros(1280, dtype=np.float32)
 
         ''' Add newly detected tracklets to tracked_stracks'''
         unconfirmed = []
@@ -284,7 +322,20 @@ class BYTETracker(object):
             track = strack_pool[itracked]
             det = detections[idet]
             if track.state == TrackState.Tracked:
-                track.update(detections[idet], self.frame_id)
+                track.update(det, self.frame_id)
+                # 1. Calculate Areas for the Occlusion Hard-Lock
+                current_area = det.tlwh[2] * det.tlwh[3]
+                kf_pred_area = track.mean[2] * track.mean[3]
+
+                # 2. Check Mutation Threshold (e.g., 50% change)
+                area_ratio = current_area / (kf_pred_area + 1e-6)
+                is_area_mutated = area_ratio < 0.5 or area_ratio > 1.5
+
+                # 3. Apply Dynamic Aggregation OR Trigger Hard-Lock
+                if det.score >= 0.4 and not is_area_mutated and det.curr_feat is not None:
+                    track.update_features(det.curr_feat, det.score)
+                else:
+                    pass
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)
@@ -298,6 +349,23 @@ class BYTETracker(object):
                           (tlbr, s) in zip(dets_second, scores_second)]
         else:
             detections_second = []
+
+        if raw_frame is not None and len(detections_second) > 0:
+            for det in detections_second:
+                tlwh = det.tlwh
+                x, y, w, h = map(int, tlwh)
+                x1, y1 = max(0, x), max(0, y)
+                x2, y2 = min(raw_frame.shape[1], x + w), min(raw_frame.shape[0], y + h)
+                crop = raw_frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    if crop.ndim == 3 and crop.shape[2] == 3:
+                        crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                    crop_t = self.transform(crop).unsqueeze(0).to(self.device)
+                    with torch.no_grad():
+                        feat = self.extractor(crop_t).mean([2, 3]).squeeze().cpu().numpy()
+                    det.curr_feat = feat
+                else:
+                    det.curr_feat = np.zeros(1280, dtype=np.float32)
         r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
         dists = matching.iou_distance(r_tracked_stracks, detections_second)
         matches, u_track, u_detection_second = matching.linear_assignment(dists, thresh=0.5)
@@ -306,6 +374,19 @@ class BYTETracker(object):
             det = detections_second[idet]
             if track.state == TrackState.Tracked:
                 track.update(det, self.frame_id)
+                # 1. Calculate Areas for the Occlusion Hard-Lock
+                current_area = det.tlwh[2] * det.tlwh[3]
+                kf_pred_area = track.mean[2] * track.mean[3]
+
+                # 2. Check Mutation Threshold (e.g., 50% change)
+                area_ratio = current_area / (kf_pred_area + 1e-6)
+                is_area_mutated = area_ratio < 0.5 or area_ratio > 1.5
+
+                # 3. Apply Dynamic Aggregation OR Trigger Hard-Lock
+                if det.score >= 0.4 and not is_area_mutated and det.curr_feat is not None:
+                    track.update_features(det.curr_feat, det.score)
+                else:
+                    pass
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)

@@ -61,6 +61,8 @@ class BaseExp(metaclass=ABCMeta):
         return tabulate(exp_table, headers=table_header, tablefmt="fancy_grid")
 
     def merge(self, cfg_list):
+        if cfg_list and cfg_list[0] == '--':
+            cfg_list = cfg_list[1:]
         assert len(cfg_list) % 2 == 0
         for k, v in zip(cfg_list[0::2], cfg_list[1::2]):
             # only update value with same key

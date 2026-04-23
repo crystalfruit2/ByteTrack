@@ -28,6 +28,7 @@ class Exp(MyExp):
         self.no_aug_epochs = 10
         self.basic_lr_per_img = 0.001 / 64.0
         self.warmup_epochs = 1
+        self.data_dir = r"C:\Users\User\Desktop\projects\ByteTrack\datasets\mot"
 
     def get_data_loader(self, batch_size, is_distributed, no_aug=False):
         from yolox.data import (
@@ -95,7 +96,7 @@ class Exp(MyExp):
         from yolox.data import MOTDataset, ValTransform
 
         valdataset = MOTDataset(
-            data_dir=os.path.join(get_yolox_datadir(), "mot"),
+            data_dir=getattr(self, 'data_dir', os.path.join(get_yolox_datadir(), "mot")),
             json_file=self.val_ann,
             img_size=self.test_size,
             name='test',   # change to train when running on training set

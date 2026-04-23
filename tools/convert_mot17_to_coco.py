@@ -23,6 +23,11 @@ if __name__ == '__main__':
             data_path = os.path.join(DATA_PATH, 'test')
         else:
             data_path = os.path.join(DATA_PATH, 'train')
+        
+        if not os.path.exists(data_path):
+            print(f"Skipping {split} - path not found: {data_path}")
+            continue
+            
         out_path = os.path.join(OUT_PATH, '{}.json'.format(split))
         out = {'images': [], 'annotations': [], 'videos': [],
                'categories': [{'id': 1, 'name': 'pedestrian'}]}
@@ -40,6 +45,8 @@ if __name__ == '__main__':
             video_cnt += 1  # video sequence number.
             out['videos'].append({'id': video_cnt, 'file_name': seq})
             seq_path = os.path.join(data_path, seq)
+            if not os.path.exists(os.path.join(seq_path, 'img1')):
+                continue
             img_path = os.path.join(seq_path, 'img1')
             ann_path = os.path.join(seq_path, 'gt/gt.txt')
             images = os.listdir(img_path)

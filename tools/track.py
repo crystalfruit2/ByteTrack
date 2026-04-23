@@ -174,8 +174,8 @@ def main(exp, args, num_gpu):
         num_classes=exp.num_classes,
         )
 
-    torch.cuda.set_device(rank)
-    model.cuda(rank)
+    device = "cpu"
+    model.to(device)
     model.eval()
 
     if not args.speed and not args.trt:
@@ -184,13 +184,13 @@ def main(exp, args, num_gpu):
         else:
             ckpt_file = args.ckpt
         logger.info("loading checkpoint")
-        loc = "cuda:{}".format(rank)
+        loc = device
         ckpt = torch.load(ckpt_file, map_location=loc)
         # load the model state dict
         model.load_state_dict(ckpt["model"])
         logger.info("loaded checkpoint done.")
 
-    if is_distributed:
+    if is_distributed and torch.cuda.is_available():
         model = DDP(model, device_ids=[rank])
 
     if args.fuse:
@@ -279,8 +279,11 @@ if __name__ == "__main__":
     if not args.experiment_name:
         args.experiment_name = exp.exp_name
 
-    num_gpu = torch.cuda.device_count() if args.devices is None else args.devices
-    assert num_gpu <= torch.cuda.device_count()
+    num_gpu = torch.cuda.device_count() if (args.devices is None and torch.cuda.is_available()) else 1
+    if torch.cuda.is_available():
+        assert num_gpu <= torch.cuda.device_count()
+    else:
+        num_gpu = 1
 
     launch(
         main,

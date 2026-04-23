@@ -1,5 +1,5 @@
-import numpy as np
 from collections import deque
+import numpy as np
 import os
 import os.path as osp
 import copy
@@ -12,7 +12,7 @@ from .basetrack import BaseTrack, TrackState
 
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
-    def __init__(self, tlwh, score):
+    def __init__(self, tlwh, score, feature=None):
 
         # wait activate
         self._tlwh = np.asarray(tlwh, dtype=np.float)
@@ -22,6 +22,77 @@ class STrack(BaseTrack):
 
         self.score = score
         self.tracklet_len = 0
+
+        self.features = deque(maxlen=3)
+        self.scores = deque(maxlen=3)
+        
+        if feature is not None:
+            self.features.append(feature)
+            self.scores.append(score)
+            self.smooth_feat = feature.copy() # Represents Z^t
+            
+        # Hyperparameters (Set these based on your paper's specs)
+        self.agg_option = 'B'  # 'A' for L1 Bias, 'B' for Softmax
+        self.beta = 4.0        # Inertia of Memory (Option A)
+        self.tau = 0.5         # Softmax Temperature (Option B)
+    def _calculate_gammas(self):
+        """
+        Calculates dynamic weights based on the historical confidences.
+        Assumes self.scores has exactly 3 elements: [c_{t-2}, c_{t-1}, c_t]
+        """
+        c_t2 = self.scores[0]
+        c_t1 = self.scores[1]
+        c_t = self.scores[2]
+        
+        if self.agg_option == 'A':
+            # Option A: L1 Normalization with Historical Bias
+            denom = c_t + self.beta * (c_t1 + c_t2) + 1e-6 # Add epsilon to prevent div by zero
+            
+            gamma_0 = c_t / denom
+            gamma_1 = (self.beta * c_t1) / denom
+            gamma_2 = (self.beta * c_t2) / denom
+            
+            return np.array([gamma_2, gamma_1, gamma_0])
+            
+        elif self.agg_option == 'B':
+            # Option B: Temperature-Scaled Softmax
+            scores_array = np.array([c_t2, c_t1, c_t])
+            scaled_scores = scores_array / self.tau
+            
+            # Numerical stability: subtract max before exponentiating
+            exp_scores = np.exp(scaled_scores - np.max(scaled_scores))
+            gammas = exp_scores / np.sum(exp_scores)
+            
+            return gammas
+            
+        else:
+            raise ValueError("agg_option must be 'A' or 'B'")
+
+    def update_features(self, new_feature, new_score):
+        """
+        Replaces standard EMA. Updates Z^t using the calculated gammas.
+        """
+        self.features.append(new_feature)
+        self.scores.append(new_score)
+        
+        # Need full history (t, t-1, t-2) to apply the order-2 math
+        if len(self.features) < 3:
+            # Fallback for the first two frames: simple averaging
+            feats_array = np.array(self.features)
+            self.smooth_feat = np.mean(feats_array, axis=0)
+        else:
+            # Apply Dynamic Aggregation
+            gammas = self._calculate_gammas()
+            feats_array = np.array(self.features)
+            
+            # gammas = [gamma_2, gamma_1, gamma_0]
+            # feats_array = [Z^{t-2}, Z^{t-1}, f^t]
+            # np.average with axis=0 applies the weights correctly to the feature vectors
+            self.smooth_feat = np.average(feats_array, axis=0, weights=gammas)
+            
+        # Re-normalize the feature vector to keep it on the unit hypersphere
+        self.smooth_feat /= np.linalg.norm(self.smooth_feat)
+
 
     def predict(self):
         mean_state = self.mean.copy()

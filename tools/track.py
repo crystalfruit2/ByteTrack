@@ -174,7 +174,12 @@ def main(exp, args, num_gpu):
         num_classes=exp.num_classes,
         )
 
-    device = "cpu"
+    if torch.cuda.is_available():
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda:{}".format(rank))
+    else:
+        device = torch.device("cpu")
+    
     model.to(device)
     model.eval()
 
@@ -225,10 +230,16 @@ def main(exp, args, num_gpu):
     else:
         gt_type = ''
     print('gt_type', gt_type)
+    
     if args.mot20:
         gtfiles = glob.glob(os.path.join('datasets/MOT20/train', '*/gt/gt{}.txt'.format(gt_type)))
     else:
-        gtfiles = glob.glob(os.path.join('datasets/mot/train', '*/gt/gt{}.txt'.format(gt_type)))
+        # For VisDrone, look in the actual dataset path
+        data_dir = exp.data_dir
+        gtfiles = glob.glob(os.path.join(data_dir, '*/gt/gt.txt'))
+        if not gtfiles:
+            logger.warning("No ground truth files found at {}. Skipping MOTA evaluation.".format(data_dir))
+
     print('gt_files', gtfiles)
     tsfiles = [f for f in glob.glob(os.path.join(results_folder, '*.txt')) if not os.path.basename(f).startswith('eval')]
 

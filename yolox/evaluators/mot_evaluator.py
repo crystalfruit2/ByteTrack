@@ -101,7 +101,7 @@ class MOTEvaluator:
             summary (sr): summary info of evaluation.
         """
         # TODO half to amp_test
-        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+        tensor_type = (torch.cuda.HalfTensor if half else torch.cuda.FloatTensor) if torch.cuda.is_available() else (torch.HalfTensor if half else torch.FloatTensor)
         model = model.eval()
         if half:
             model = model.half()
@@ -210,7 +210,7 @@ class MOTEvaluator:
                 result_filename = os.path.join(result_folder, '{}.txt'.format(video_names[video_id]))
                 write_results(result_filename, results)
 
-        statistics = torch.cuda.FloatTensor([inference_time, track_time, n_samples])
+        statistics = (torch.cuda.FloatTensor([inference_time, track_time, n_samples]) if torch.cuda.is_available() else torch.FloatTensor([inference_time, track_time, n_samples]))
         if distributed:
             data_list = gather(data_list, dst=0)
             data_list = list(itertools.chain(*data_list))
@@ -245,7 +245,7 @@ class MOTEvaluator:
             summary (sr): summary info of evaluation.
         """
         # TODO half to amp_test
-        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+        tensor_type = (torch.cuda.HalfTensor if half else torch.cuda.FloatTensor) if torch.cuda.is_available() else (torch.HalfTensor if half else torch.FloatTensor)
         model = model.eval()
         if half:
             model = model.half()
@@ -332,7 +332,7 @@ class MOTEvaluator:
                 result_filename = os.path.join(result_folder, '{}.txt'.format(video_names[video_id]))
                 write_results_no_score(result_filename, results)
 
-        statistics = torch.cuda.FloatTensor([inference_time, track_time, n_samples])
+        statistics = (torch.cuda.FloatTensor([inference_time, track_time, n_samples]) if torch.cuda.is_available() else torch.FloatTensor([inference_time, track_time, n_samples]))
         if distributed:
             data_list = gather(data_list, dst=0)
             data_list = list(itertools.chain(*data_list))
@@ -369,7 +369,7 @@ class MOTEvaluator:
         """
         # TODO half to amp_test
         if torch.cuda.is_available():
-            tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+            tensor_type = (torch.cuda.HalfTensor if half else torch.cuda.FloatTensor) if torch.cuda.is_available() else (torch.HalfTensor if half else torch.FloatTensor)
         else:
             tensor_type = torch.HalfTensor if half else torch.FloatTensor
         model = model.eval()
@@ -459,7 +459,7 @@ class MOTEvaluator:
                 result_filename = os.path.join(result_folder, '{}.txt'.format(video_names[video_id]))
                 write_results_no_score(result_filename, results)
 
-        statistics = torch.cuda.FloatTensor([inference_time, track_time, n_samples])
+        statistics = (torch.cuda.FloatTensor([inference_time, track_time, n_samples]) if torch.cuda.is_available() else torch.FloatTensor([inference_time, track_time, n_samples]))
         if distributed:
             data_list = gather(data_list, dst=0)
             data_list = list(itertools.chain(*data_list))
@@ -496,7 +496,7 @@ class MOTEvaluator:
         """
         # TODO half to amp_test
         if torch.cuda.is_available():
-            tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+            tensor_type = (torch.cuda.HalfTensor if half else torch.cuda.FloatTensor) if torch.cuda.is_available() else (torch.HalfTensor if half else torch.FloatTensor)
         else:
             tensor_type = torch.HalfTensor if half else torch.FloatTensor
         model = model.eval()
@@ -589,7 +589,7 @@ class MOTEvaluator:
                 write_results(result_filename, results)
 
         if torch.cuda.is_available():
-            statistics = torch.cuda.FloatTensor([inference_time, track_time, n_samples])
+            statistics = (torch.cuda.FloatTensor([inference_time, track_time, n_samples]) if torch.cuda.is_available() else torch.FloatTensor([inference_time, track_time, n_samples]))
         else:
             statistics = torch.FloatTensor([inference_time, track_time, n_samples])
 

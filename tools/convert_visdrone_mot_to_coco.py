@@ -7,16 +7,17 @@ def convert_mot_to_coco(data_root, split='test'):
     out_path = os.path.join(out_dir, f'{split}.json')
 
     out = {
-        "videos": [],        # <-- required by ByteTrack
+        "videos": [],
         "images": [],
         "annotations": [],
-        "categories": [{"id": 1, "name": "pedestrian"}]
+        "categories": [{"id": 1, "name": "pedestrian"}] 
     }
 
     image_id = 1
     ann_id = 1
     video_id = 1
 
+    # Get valid sequences (ignores the annotations folder)
     sequences = sorted([
         s for s in os.listdir(data_root)
         if os.path.isdir(os.path.join(data_root, s)) and s != 'annotations'
@@ -28,24 +29,29 @@ def convert_mot_to_coco(data_root, split='test'):
         img_dir = os.path.join(seq_path, 'img1')
         gt_path = os.path.join(seq_path, 'gt', 'gt.txt')
 
-        # Read seqinfo.ini
+        # SAFELY Read seqinfo.ini (Prevents the crash you just experienced)
         ini_path = os.path.join(seq_path, 'seqinfo.ini')
         seq_info = {}
-        with open(ini_path, 'r') as f:
-            for line in f:
-                if '=' in line:
-                    k, v = line.strip().split('=', 1)
-                    seq_info[k.strip()] = v.strip()
+        if os.path.exists(ini_path):
+            with open(ini_path, 'r') as f:
+                for line in f:
+                    if '=' in line:
+                        k, v = line.strip().split('=', 1)
+                        seq_info[k.strip()] = v.strip()
 
+        # Default fallback resolutions if ini is missing
         width = int(seq_info.get('imWidth', 1920))
         height = int(seq_info.get('imHeight', 1080))
         img_ext = seq_info.get('imExt', '.jpg')
 
-        # Add video entry
         out['videos'].append({
             "id": video_id,
             "file_name": seq
         })
+
+        if not os.path.exists(img_dir):
+            print(f"Warning: No img1 folder found in {seq}. Skipping.")
+            continue
 
         img_files = sorted([
             f for f in os.listdir(img_dir)
@@ -53,36 +59,40 @@ def convert_mot_to_coco(data_root, split='test'):
         ])
         seq_length = len(img_files)
 
-        # Track first image id of this sequence (for first_frame_image_id)
         first_image_id = image_id
-
         frame_to_image_id = {}
 
         for img_file in img_files:
-            frame_num = int(os.path.splitext(img_file)[0])
+            # Extract the integer frame number from the filename
+            try:
+                frame_num = int(os.path.splitext(img_file)[0])
+            except ValueError:
+                continue 
+
             frame_to_image_id[frame_num] = image_id
 
             out['images'].append({
                 "id": image_id,
-                "video_id": video_id,           # <-- was missing
+                "video_id": video_id,
                 "file_name": f"{seq}/img1/{img_file}",
                 "width": width,
                 "height": height,
                 "frame_id": frame_num,
                 "seq_length": seq_length,
-                "first_frame_image_id": first_image_id  # <-- was wrong before
+                "first_frame_image_id": first_image_id
             })
             image_id += 1
 
-        # Read GT annotations
+        # Read GT annotations safely
         if os.path.exists(gt_path):
             with open(gt_path, 'r') as f:
                 for line in f:
                     parts = line.strip().split(',')
                     if len(parts) < 6:
                         continue
-                    frame = int(parts[0])
-                    tid   = int(parts[1])
+                    
+                    frame = int(float(parts[0]))
+                    tid   = int(float(parts[1]))
                     x, y, w, h = float(parts[2]), float(parts[3]), \
                                  float(parts[4]), float(parts[5])
 
@@ -94,7 +104,7 @@ def convert_mot_to_coco(data_root, split='test'):
                     out['annotations'].append({
                         "id": ann_id,
                         "image_id": frame_to_image_id[frame],
-                        "video_id": video_id,   # <-- also add here
+                        "video_id": video_id,
                         "category_id": 1,
                         "bbox": [x, y, w, h],
                         "area": w * h,
@@ -112,7 +122,8 @@ def convert_mot_to_coco(data_root, split='test'):
     print(f"\nDone! {len(out['videos'])} videos, {len(out['images'])} images, "
           f"{len(out['annotations'])} annotations -> {out_path}")
 
-
 if __name__ == '__main__':
-    DATA_ROOT = r'C:\Users\User\Desktop\projects\ByteTrack\datasets\VisDrone_MOT_Format\VisDrone2019-MOT-val'
-    convert_mot_to_coco(DATA_ROOT, split='test')
+    # Fixed Path: Pointing to the MOT formatted folder we made in Step 1
+    DATA_ROOT = r'C:\Users\User\Desktop\projects\ByteTrack\datasets\VisDrone_MOT_Format\VisDrone2019-MOT-test-dev'
+    # Fixed Output Name: Ensuring it outputs 'test-dev.json' for the config
+    convert_mot_to_coco(DATA_ROOT, split='test-dev')

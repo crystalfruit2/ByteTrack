@@ -26,16 +26,19 @@ class STrack(BaseTrack):
         self.score = score
         self.tracklet_len = 0
 
-        self.features = deque(maxlen=3)
+        # smooth_history stores the last 2 aggregated templates F^{t-2}, F^{t-1}
+        # (NOT raw features — we store the output of update_features each step)
+        self.smooth_history = deque(maxlen=2)
         self.scores = deque(maxlen=3)
         self.curr_feat = None
         self.smooth_feat = None
-        
+
         if feature is not None:
-            self.features.append(feature)
+            feat_norm = feature / (np.linalg.norm(feature) + 1e-6)
+            self.smooth_feat = feat_norm.copy()
+            self.smooth_history.append(feat_norm.copy())
             self.scores.append(score)
-            self.curr_feat = feature
-            self.smooth_feat = feature.copy() # Represents Z^t
+            self.curr_feat = feat_norm
             
         # Hyperparameters (Set these based on your paper's specs)
         self.agg_option = 'B'  # 'A' for L1 Bias, 'B' for Softmax
@@ -76,30 +79,32 @@ class STrack(BaseTrack):
 
     def update_features(self, new_feature, new_score):
         """
-        Replaces standard EMA. Updates Z^t using the calculated gammas.
+        Replaces standard EMA with second-order dynamic aggregation (DARE-MOT).
+        F^t = gamma_0*f^t + gamma_1*F^{t-1} + gamma_2*F^{t-2}
+        smooth_history stores the aggregated templates, not raw features.
         """
-        self.features.append(new_feature)
         self.scores.append(new_score)
-        
-        # Need full history (t, t-1, t-2) to apply the order-2 math
-        if len(self.features) < 3:
-            # Fallback for the first two frames: simple averaging
-            feats_array = np.array(self.features)
-            self.smooth_feat = np.mean(feats_array, axis=0)
+        f_t = new_feature / (np.linalg.norm(new_feature) + 1e-6)  # normalize raw feature
+
+        if len(self.smooth_history) < 2:
+            # Warmup: not enough history yet, use raw feature directly
+            new_smooth = f_t.copy()
         else:
-            # Apply Dynamic Aggregation
+            # Full second-order aggregation using aggregated historical templates
             gammas = self._calculate_gammas()
-            feats_array = np.array(self.features)
-            
-            # gammas = [gamma_2, gamma_1, gamma_0]
-            # feats_array = [Z^{t-2}, Z^{t-1}, f^t]
-            # np.average with axis=0 applies the weights correctly to the feature vectors
-            self.smooth_feat = np.average(feats_array, axis=0, weights=gammas)
-            
-        # Re-normalize the feature vector to keep it on the unit hypersphere
-        norm = np.linalg.norm(self.smooth_feat)
+            F_t2 = self.smooth_history[0]  # F^{t-2} — aggregated template
+            F_t1 = self.smooth_history[1]  # F^{t-1} — aggregated template
+            feats_array = np.array([F_t2, F_t1, f_t])
+            # gammas = [gamma_2, gamma_1, gamma_0] — ordered oldest to newest
+            new_smooth = np.average(feats_array, axis=0, weights=gammas)
+
+        # Re-normalize to keep on unit hypersphere
+        norm = np.linalg.norm(new_smooth)
         if norm > 0:
-            self.smooth_feat /= norm
+            new_smooth /= norm
+
+        self.smooth_feat = new_smooth
+        self.smooth_history.append(new_smooth.copy())  # store smooth template, not raw
 
 
     def predict(self):
@@ -311,31 +316,41 @@ class BYTETracker(object):
 
         ''' Step 2: First association, with high score detection boxes'''
         strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
-        # Predict the current location with KF
         STrack.multi_predict(strack_pool)
-        dists = matching.iou_distance(strack_pool, detections)
+
+        iou_dists = matching.iou_distance(strack_pool, detections)
         if not self.args.mot20:
-            dists = matching.fuse_score(dists, detections)
+            iou_dists = matching.fuse_score(iou_dists, detections)
+
+        # Fuse ReID distance with IoU — smooth_feat is the DARE-MOT aggregated template.
+        # embedding_distance_safe falls back to cost=1.0 for any track/det without features,
+        # so the fused matrix degrades gracefully to IoU-only for those pairs.
+        reid_dists = matching.embedding_distance_safe(strack_pool, detections)
+        dists = 0.5 * iou_dists + 0.5 * reid_dists
+
         matches, u_track, u_detection = matching.linear_assignment(dists, thresh=self.args.match_thresh)
 
         for itracked, idet in matches:
             track = strack_pool[itracked]
             det = detections[idet]
             if track.state == TrackState.Tracked:
+                # Save Kalman-predicted bbox BEFORE update overwrites track.mean
+                pred_tlwh = track.tlwh.copy()
+
                 track.update(det, self.frame_id)
-                # 1. Calculate Areas for the Occlusion Hard-Lock
-                current_area = det.tlwh[2] * det.tlwh[3]
-                kf_pred_area = track.mean[2] * track.mean[3]
 
-                # 2. Check Mutation Threshold (e.g., 50% change)
-                area_ratio = current_area / (kf_pred_area + 1e-6)
-                is_area_mutated = area_ratio < 0.5 or area_ratio > 1.5
+                # Kinematic divergence check: IoU between KF-predicted and detected bbox
+                p = pred_tlwh
+                d = det.tlwh
+                ix1 = max(p[0], d[0]);         iy1 = max(p[1], d[1])
+                ix2 = min(p[0]+p[2], d[0]+d[2]); iy2 = min(p[1]+p[3], d[1]+d[3])
+                inter = max(0, ix2-ix1) * max(0, iy2-iy1)
+                union = p[2]*p[3] + d[2]*d[3] - inter
+                kf_iou = inter / (union + 1e-6)
+                is_kinematic_divergence = kf_iou < 0.3  # tau_shape threshold
 
-                # 3. Apply Dynamic Aggregation OR Trigger Hard-Lock
-                if det.score >= 0.4 and not is_area_mutated and det.curr_feat is not None:
+                if det.score >= 0.4 and not is_kinematic_divergence and det.curr_feat is not None:
                     track.update_features(det.curr_feat, det.score)
-                else:
-                    pass
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)
@@ -373,20 +388,23 @@ class BYTETracker(object):
             track = r_tracked_stracks[itracked]
             det = detections_second[idet]
             if track.state == TrackState.Tracked:
+                # Save Kalman-predicted bbox BEFORE update overwrites track.mean
+                pred_tlwh = track.tlwh.copy()
+
                 track.update(det, self.frame_id)
-                # 1. Calculate Areas for the Occlusion Hard-Lock
-                current_area = det.tlwh[2] * det.tlwh[3]
-                kf_pred_area = track.mean[2] * track.mean[3]
 
-                # 2. Check Mutation Threshold (e.g., 50% change)
-                area_ratio = current_area / (kf_pred_area + 1e-6)
-                is_area_mutated = area_ratio < 0.5 or area_ratio > 1.5
+                # Kinematic divergence check: IoU between KF-predicted and detected bbox
+                p = pred_tlwh
+                d = det.tlwh
+                ix1 = max(p[0], d[0]);         iy1 = max(p[1], d[1])
+                ix2 = min(p[0]+p[2], d[0]+d[2]); iy2 = min(p[1]+p[3], d[1]+d[3])
+                inter = max(0, ix2-ix1) * max(0, iy2-iy1)
+                union = p[2]*p[3] + d[2]*d[3] - inter
+                kf_iou = inter / (union + 1e-6)
+                is_kinematic_divergence = kf_iou < 0.3  # tau_shape threshold
 
-                # 3. Apply Dynamic Aggregation OR Trigger Hard-Lock
-                if det.score >= 0.4 and not is_area_mutated and det.curr_feat is not None:
+                if det.score >= 0.4 and not is_kinematic_divergence and det.curr_feat is not None:
                     track.update_features(det.curr_feat, det.score)
-                else:
-                    pass
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)

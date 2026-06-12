@@ -110,6 +110,28 @@ def v_iou_distance(atracks, btracks):
 
     return cost_matrix
 
+def embedding_distance_safe(tracks, detections, metric='cosine'):
+    """
+    Like embedding_distance but handles None smooth_feat / curr_feat gracefully.
+    Tracks or detections without features get cost 1.0 (max) so IoU still decides them.
+    """
+    cost_matrix = np.ones((len(tracks), len(detections)), dtype=np.float64)
+    if cost_matrix.size == 0:
+        return cost_matrix
+
+    for i, track in enumerate(tracks):
+        if track.smooth_feat is None:
+            continue
+        for j, det in enumerate(detections):
+            if det.curr_feat is None:
+                continue
+            tf = track.smooth_feat.reshape(1, -1).astype(np.float64)
+            df = det.curr_feat.reshape(1, -1).astype(np.float64)
+            cost_matrix[i, j] = max(0.0, cdist(tf, df, metric)[0, 0])
+
+    return cost_matrix
+
+
 def embedding_distance(tracks, detections, metric='cosine'):
     """
     :param tracks: list[STrack]

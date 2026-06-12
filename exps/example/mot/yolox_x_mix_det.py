@@ -16,7 +16,10 @@ class Exp(MyExp):
         self.width = 1.25
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
         self.train_ann = "train.json"
-        self.val_ann = "test.json"    # change to train.json when running on training set
+        
+        # CHANGE 1: Point to our VisDrone JSON file
+        self.val_ann = "test-dev.json" 
+        
         self.input_size = (800, 1440)
         self.test_size = (800, 1440)
         self.random_size = (18, 32)
@@ -28,6 +31,8 @@ class Exp(MyExp):
         self.no_aug_epochs = 10
         self.basic_lr_per_img = 0.001 / 64.0
         self.warmup_epochs = 1
+        
+        # CHANGE 2: Ensure this points to your mot directory
         self.data_dir = r"C:\Users\User\Desktop\projects\ByteTrack\datasets\mot"
 
     def get_data_loader(self, batch_size, is_distributed, no_aug=False):
@@ -96,10 +101,14 @@ class Exp(MyExp):
         from yolox.data import MOTDataset, ValTransform
 
         valdataset = MOTDataset(
-            data_dir=getattr(self, 'data_dir', os.path.join(get_yolox_datadir(), "mot")),
+            data_dir=self.data_dir,
             json_file=self.val_ann,
             img_size=self.test_size,
-            name='test',   # change to train when running on training set
+            
+            # CHANGE 3: Set name to empty string. 
+            # This ensures it looks in 'mot/uav...' instead of 'mot/test/uav...'
+            name='',   
+            
             preproc=ValTransform(
                 rgb_means=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),

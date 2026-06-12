@@ -123,7 +123,5 @@ def convert_mot_to_coco(data_root, split='test'):
           f"{len(out['annotations'])} annotations -> {out_path}")
 
 if __name__ == '__main__':
-    # Fixed Path: Pointing to the MOT formatted folder we made in Step 1
-    DATA_ROOT = r'C:\Users\User\Desktop\projects\ByteTrack\datasets\VisDrone_MOT_Format\VisDrone2019-MOT-test-dev'
-    # Fixed Output Name: Ensuring it outputs 'test-dev.json' for the config
+    DATA_ROOT = r'C:\Users\User\Desktop\projects\ByteTrack\datasets\mot'
     convert_mot_to_coco(DATA_ROOT, split='test-dev')
